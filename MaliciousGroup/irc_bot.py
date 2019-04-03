@@ -10,7 +10,6 @@ import re
 NoneType = type(None)
 IRC_MSG_REGEX = r'^(:(\S+) )?(\S+)( (?!:)(.+?))?( :(.+))?$'
 IRC_NICK_REGEX = r'^[a-z|A-Z|_|\\|\[|\]|\{|\}][a-z|A-Z|0-9|_| |\\|\[|\]|\{|\}]{2,16}$'
-IRC_USER_REGEX = r''
 IRC_CHANNEL_REGEX = r'^[#&!+][^\x00\x07\x0A\x0D, ]+$'
 
 
@@ -22,6 +21,7 @@ class Bot(object):
         self._port = None
         self._nick = self._random_string(6)
         self._user = self._random_string(6)
+        self._opers = []
         self._channel = None
         self._channels = []
         self._ssl_flag = False
@@ -135,6 +135,7 @@ class Bot(object):
                 for line in data.split('\r\n'):
                     self._r_queue.put(line)
                     self._message_parser()
+                    self._r_queue.task_done()
             if self._sock in write:
                 if self._w_queue.empty() is not True:
                     stub = self._w_queue.get()
@@ -162,21 +163,21 @@ class Bot(object):
 
             '''Handle Ping Responses'''
             if command.lower().startswith('ping'):
-                self._w_queue.put("PONG {}".format(trailing).lstrip(' :'))
+                self.irc_pong(trailing)
 
             '''Join Channels on connection'''
             if command == "396":
                 for chan in self._channels:
-                    self._w_queue.put("JOIN {}".format(chan))
+                    self.irc_join(chan)
 
             '''Set Nickname on connection'''
             if command == "432":
-                self._w_queue.put("NICK {}".format(self._nick))
+                self.irc_nick(self._nick)
 
             if command.lower().startswith("notice"):
                 if 'found your hostname' in trailing.lower():
-                    self._w_queue.put("NICK {}".format(self._nick))
-                    self._w_queue.put("USER {} {} {} :{}".format(self._user, 8, 0, "Malicious Group"))
+                    self.irc_nick(self._nick)
+                    self.irc_user(self._user, "We are Malicious Group")
 
             '''Send the incoming message to custom handler for parsing by user'''
             self.custom_handler(full, prefix, command, params, trailing)
@@ -193,18 +194,28 @@ class Bot(object):
         except socket.error:
             raise
 
+    '''Reply with PONG and Server String'''
+    def irc_pong(self, server_string: str):
+        self._w_queue.put("PONG {}".format(server_string.lstrip(' :')))
+
     '''Join an IRC Channel'''
     def irc_join(self, channel: str):
-        self.socket_send("JOIN {}".format(channel))
+        self._w_queue.put("JOIN {}".format(channel))
 
     '''Part a IRC Channel'''
     def irc_part(self, channel: str):
-        self.socket_send("PART {}".format(channel))
+        self._w_queue.put("PART {}".format(channel))
 
     '''Change IRC nickname'''
     def irc_nick(self, nickname: str):
-        self.socket_send("NICK {}".format(nickname))
+        self._w_queue.put("NICK {}".format(nickname))
+
+    '''Set the IRC Username'''
+    def irc_user(self, user: str, message: str):
+        if not message:
+            message = "Act like you know"
+        self._w_queue.put("USER {} {} {} :{}".format(user, 8, 0, message))
 
     '''Send Message to IRC Target'''
     def irc_message(self, target: str, message: str):
-        self.socket_send(":null PRIVMSG {} :{}".format(target, message))
+        self._w_queue.put(":null PRIVMSG {} :{}".format(target, message))
